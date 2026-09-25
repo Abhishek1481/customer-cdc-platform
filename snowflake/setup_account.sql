@@ -1,0 +1,18 @@
+-- One-time account setup. Run manually by an administrator in a Snowflake
+-- worksheet (it is NOT executed by the pipeline). Replace <service_user> with
+-- the user the consumer authenticates as.
+USE ROLE SYSADMIN;
+
+CREATE WAREHOUSE IF NOT EXISTS CDC_WH
+    WAREHOUSE_SIZE = 'XSMALL'
+    AUTO_SUSPEND = 60
+    AUTO_RESUME = TRUE
+    INITIALLY_SUSPENDED = TRUE;
+
+CREATE DATABASE IF NOT EXISTS CUSTOMER_CDC;
+
+USE ROLE SECURITYADMIN;
+CREATE ROLE IF NOT EXISTS CDC_LOADER;
+GRANT USAGE ON WAREHOUSE CDC_WH TO ROLE CDC_LOADER;
+GRANT USAGE, CREATE SCHEMA ON DATABASE CUSTOMER_CDC TO ROLE CDC_LOADER;
+-- GRANT ROLE CDC_LOADER TO USER <service_user>;
