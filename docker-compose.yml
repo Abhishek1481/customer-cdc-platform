@@ -1,0 +1,162 @@
+# Local CDC stack: PostgreSQL (logical WAL) -> Debezium (Kafka Connect) -> Kafka -> Python consumer
+#
+#   cp .env.example .env        # then edit the passwords
+#   docker compose up -d --build
+#   docker compose --profile tools run --rm workload run --inserts 5 --updates 20 --deletes 2
+#   docker compose run --rm consumer cdc-warehouse query current_customers
+
+name: customer-cdc
+
+x-app-env: &app-env
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_FORMAT: ${LOG_FORMAT:-json}
+  KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+  KAFKA_CONNECT_URL: http://connect:8083
+  KAFKA_TOPIC: cdc.public.customers
+  KAFKA_DLQ_TOPIC: cdc.public.customers.dlq
+  KAFKA_GROUP_ID: ${KAFKA_GROUP_ID:-customer-cdc-warehouse-loader}
+  WAREHOUSE_TARGET: ${WAREHOUSE_TARGET:-duckdb}
+  DUCKDB_PATH: /data/warehouse.duckdb
+  SCD_INTERVAL_SECONDS: ${SCD_INTERVAL_SECONDS:-15}
+  SNOWFLAKE_ACCOUNT: ${SNOWFLAKE_ACCOUNT:-}
+  SNOWFLAKE_USER: ${SNOWFLAKE_USER:-}
+  SNOWFLAKE_PASSWORD: ${SNOWFLAKE_PASSWORD:-}
+  SNOWFLAKE_PRIVATE_KEY_PATH: ${SNOWFLAKE_PRIVATE_KEY_PATH:-}
+  SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${SNOWFLAKE_PRIVATE_KEY_PASSPHRASE:-}
+  SNOWFLAKE_ROLE: ${SNOWFLAKE_ROLE:-}
+  SNOWFLAKE_WAREHOUSE: ${SNOWFLAKE_WAREHOUSE:-}
+  SNOWFLAKE_DATABASE: ${SNOWFLAKE_DATABASE:-}
+
+services:
+  postgres:
+    image: postgres:16
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=4
+      - -c
+      - max_wal_senders=4
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-customers_db}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      DEBEZIUM_DB_USER: ${DEBEZIUM_DB_USER:-debezium}
+      DEBEZIUM_DB_PASSWORD: ${DEBEZIUM_DB_PASSWORD:?set DEBEZIUM_DB_PASSWORD in .env}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./postgres/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+      - ./postgres/create-replication-user.sh:/docker-entrypoint-initdb.d/03-create-replication-user.sh:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  kafka:
+    image: apache/kafka:4.3.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 168
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafkadata:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:29092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+
+  connect:
+    image: quay.io/debezium/connect:3.6
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: customer-cdc-connect
+      CONFIG_STORAGE_TOPIC: connect_configs
+      OFFSET_STORAGE_TOPIC: connect_offsets
+      STATUS_STORAGE_TOPIC: connect_statuses
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      # Lets connector-config.json reference ${env:...} instead of literal secrets.
+      CONNECT_CONFIG_PROVIDERS: env
+      CONNECT_CONFIG_PROVIDERS_ENV_CLASS: org.apache.kafka.common.config.provider.EnvVarConfigProvider
+      CDC_SOURCE_DB_HOST: postgres
+      CDC_SOURCE_DB_PORT: "5432"
+      CDC_SOURCE_DB_NAME: ${POSTGRES_DB:-customers_db}
+      DEBEZIUM_DB_USER: ${DEBEZIUM_DB_USER:-debezium}
+      DEBEZIUM_DB_PASSWORD: ${DEBEZIUM_DB_PASSWORD:?set DEBEZIUM_DB_PASSWORD in .env}
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/connectors > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  bootstrap:
+    build: .
+    command: ["cdc-bootstrap", "all"]
+    environment: *app-env
+    depends_on:
+      kafka:
+        condition: service_healthy
+      connect:
+        condition: service_healthy
+    restart: "no"
+
+  consumer:
+    build: .
+    command: ["cdc-consumer"]
+    environment: *app-env
+    volumes:
+      - warehouse:/data
+      - ${SNOWFLAKE_PRIVATE_KEY_DIR:-./secrets}:/run/secrets/snowflake:ro
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  workload:
+    build: .
+    profiles: ["tools"]
+    entrypoint: ["cdc-workload"]
+    command: ["run"]
+    environment:
+      LOG_FORMAT: text
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-customers_db}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  kafkadata:
+  warehouse:

@@ -1,0 +1,38 @@
+{
+  "name": "customers-postgres-cdc",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    "plugin.name": "pgoutput",
+
+    "database.hostname": "${env:CDC_SOURCE_DB_HOST}",
+    "database.port": "${env:CDC_SOURCE_DB_PORT}",
+    "database.dbname": "${env:CDC_SOURCE_DB_NAME}",
+    "database.user": "${env:DEBEZIUM_DB_USER}",
+    "database.password": "${env:DEBEZIUM_DB_PASSWORD}",
+
+    "topic.prefix": "cdc",
+    "schema.include.list": "public",
+    "table.include.list": "public.customers",
+
+    "slot.name": "customers_cdc_slot",
+    "publication.name": "customers_publication",
+    "publication.autocreate.mode": "disabled",
+    "snapshot.mode": "initial",
+
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+
+    "tombstones.on.delete": "true",
+    "decimal.handling.mode": "string",
+    "time.precision.mode": "adaptive_time_microseconds",
+    "heartbeat.interval.ms": "10000",
+
+    "topic.creation.default.replication.factor": "1",
+    "topic.creation.default.partitions": "3",
+    "topic.creation.default.cleanup.policy": "delete",
+    "topic.creation.default.retention.ms": "604800000"
+  }
+}
