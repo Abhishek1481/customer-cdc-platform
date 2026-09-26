@@ -38,3 +38,4 @@ Thumbs.db
 
 # Airflow CI virtualenv
 .airflow-venv/
+pytest-results.xml

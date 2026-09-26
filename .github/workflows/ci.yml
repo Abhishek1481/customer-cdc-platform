@@ -73,4 +73,16 @@ jobs:
           echo "TEST_KAFKA_BOOTSTRAP=localhost:9092" >> "$GITHUB_ENV"
       - run: uv sync --locked
       - name: Unit + integration tests
-        run: uv run pytest --cov=src --cov-report=term-missing
+        run: uv run pytest --cov=src --cov-report=term-missing --junitxml=pytest-results.xml
+      - name: Annotate failing tests
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          for case in ET.parse("pytest-results.xml").iter("testcase"):
+              for bad in list(case.iter("failure")) + list(case.iter("error")):
+                  text = ((bad.get("message") or "") + " | " + (bad.text or "")[-1500:])
+                  text = text.replace("%", "%25").replace("", "").replace("
+", "%0A")
+                  print(f"::error title={case.get('classname')}.{case.get('name')}::{text}")
+          PY
