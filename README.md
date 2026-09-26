@@ -1,5 +1,7 @@
 # Customer Data Change Tracking Platform
 
+[![ci](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
+
 A change data capture (CDC) pipeline. Every INSERT, UPDATE and DELETE on a PostgreSQL `customers` table is read from the write-ahead log by **Debezium**, published to **Kafka**, consumed by a **Python** loader, and stored as a full **SCD Type 2** history in **Snowflake**. A local DuckDB warehouse stands in for Snowflake during development.
 
 > **Status: local development / demonstration environment.** The Snowflake SQL and adapter are implemented and unit-tested against a mocked connector, but they have **not** been run against a real Snowflake account. The Docker Compose stack is written but could not be started on the build machine (Docker wasn't installed). The parts that were actually run are listed under [Testing](#9-testing).
@@ -105,8 +107,8 @@ flowchart LR
 Prerequisites: [uv](https://docs.astral.sh/uv/) for local development. [Docker Desktop](https://www.docker.com/products/docker-desktop/) for the full stack.
 
 ```bash
-git clone <your-fork-url> data-engineering-portfolio
-cd data-engineering-portfolio/project-1-customer-cdc
+git clone https://github.com/<your-username>/customer-cdc-platform.git
+cd customer-cdc-platform
 uv sync
 ```
 
@@ -273,7 +275,7 @@ No benchmarks were run. This section is a design discussion, not measured result
 ## Repository layout
 
 ```text
-project-1-customer-cdc/
+customer-cdc-platform/
 ├── src/customer_cdc/
 │   ├── producer/          workload generator (simulated application writes)
 │   ├── consumer/          Debezium parsing, batch processor, Kafka loop, DLQ, replay mode
@@ -293,4 +295,4 @@ project-1-customer-cdc/
 
 Python code lives in one `customer_cdc` package with `producer/`, `consumer/`, `transformations/` and `utils/` sub-packages, rather than as top-level `src/producer` directories. The generic top-level names (`utils`, `consumer`) could clash with other installed packages.
 
-More reading: [docs/cdc-concepts.md](docs/cdc-concepts.md) (WAL, Debezium events, offsets, Kafka terms) · [docs/interview-notes.md](docs/interview-notes.md)
+Resume bullets: [docs/resume-bullets.md](docs/resume-bullets.md) · More reading: [docs/cdc-concepts.md](docs/cdc-concepts.md) (WAL, Debezium events, offsets, Kafka terms) · [docs/interview-notes.md](docs/interview-notes.md)

@@ -1,0 +1,76 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Throwaway credentials for CI-only containers; not secrets.
+  TEST_POSTGRES_DSN: postgresql://postgres:postgres@localhost:5432/postgres
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Ruff format check
+        run: uv run ruff format --check .
+      - name: Mypy (strict)
+        run: uv run mypy
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate docker-compose.yml with the example env file
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Fail on committed .env files or credential-looking strings
+        run: |
+          if git ls-files | grep -E '(^|/)\.env$'; then
+            echo "::error::.env file committed"; exit 1
+          fi
+          if git grep -nE '(ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{50,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|xox[baprs]-[A-Za-z0-9-]+)' -- ':!*.md' ':!.github/**'; then
+            echo "::error::possible credential committed"; exit 1
+          fi
+          echo "no secrets found"
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+      - name: Start PostgreSQL 16
+        run: |
+          docker run -d --name pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres             postgres:16 -c wal_level=logical -c max_replication_slots=4
+          for i in $(seq 1 30); do docker exec pg pg_isready -U postgres && break; sleep 2; done
+      - name: Start Kafka
+        run: |
+          docker run -d --name kafka -p 9092:9092 apache/kafka:4.3.1
+          for i in $(seq 1 30); do
+            docker exec kafka /opt/kafka/bin/kafka-broker-api-versions.sh               --bootstrap-server localhost:9092 > /dev/null 2>&1 && break
+            sleep 2
+          done
+          echo "TEST_KAFKA_BOOTSTRAP=localhost:9092" >> "$GITHUB_ENV"
+      - run: uv sync --locked
+      - name: Unit + integration tests
+        run: uv run pytest --cov=src --cov-report=term-missing

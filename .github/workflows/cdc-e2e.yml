@@ -1,0 +1,49 @@
+name: cdc-e2e (manual)
+
+# Full Docker Compose run: PostgreSQL -> Debezium -> Kafka ->
+# Python consumer -> DuckDB SCD2. Manual only: it pulls several large images
+# and takes a few minutes. Uses throwaway CI credentials, no secrets.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure throwaway environment
+        run: |
+          cp .env.example .env
+          sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=ci-only-password/' .env
+          sed -i 's/^DEBEZIUM_DB_PASSWORD=.*/DEBEZIUM_DB_PASSWORD=ci-only-debezium/' .env
+          sed -i 's/^SCD_INTERVAL_SECONDS=.*/SCD_INTERVAL_SECONDS=5/' .env
+      - name: Start stack
+        run: docker compose up -d --build --wait --wait-timeout 300 postgres kafka connect
+      - name: Bootstrap topics and connector
+        run: docker compose run --rm bootstrap
+      - name: Start consumer
+        run: docker compose up -d consumer
+      - name: Generate changes in PostgreSQL
+        run: |
+          docker compose --profile tools run --rm workload run --inserts 5 --updates 15 --deletes 2 --seed 1
+          docker compose --profile tools run --rm workload lifecycle
+      - name: Wait for SCD2 history
+        run: |
+          for i in $(seq 1 30); do
+            if docker compose run --rm consumer cdc-warehouse query versions_per_customer | grep -q "rows)"; then break; fi
+            sleep 5
+          done
+          sleep 20
+          docker compose run --rm consumer cdc-warehouse query pipeline_lag
+          docker compose run --rm consumer cdc-warehouse query customer_history
+          docker compose run --rm consumer cdc-warehouse query versions_per_customer
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --tail 200
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
