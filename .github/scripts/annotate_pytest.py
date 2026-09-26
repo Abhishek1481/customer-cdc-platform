@@ -9,7 +9,8 @@ def escape(text: str) -> str:
 
 
 def main(path: str) -> None:
-    for case in ET.parse(path).iter("testcase"):
+    # Input is pytest's own JUnit output from this CI job, not untrusted XML.
+    for case in ET.parse(path).iter("testcase"):  # noqa: S314
         for bad in [*case.iter("failure"), *case.iter("error")]:
             message = f"{bad.get('message') or ''} | {(bad.text or '')[-1500:]}"
             title = f"{case.get('classname')}.{case.get('name')}"

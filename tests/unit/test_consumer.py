@@ -68,8 +68,9 @@ def test_processor_counts_operations_and_dead_letters(
     warehouse: DuckDBWarehouse, stream: EventStream
 ) -> None:
     row = customer_row(1)
+    ins = stream.insert(row)
     upd, row = stream.update(row, city="Denver")
-    batch = messages([stream.insert(customer_row(1)), upd, stream.delete(row), None, b"garbage"])
+    batch = messages([ins, upd, stream.delete(row), None, b"garbage"])
     dlq = InMemoryDeadLetterSink()
 
     stats = BatchProcessor(warehouse, dlq, FAST_RETRY).process(batch)

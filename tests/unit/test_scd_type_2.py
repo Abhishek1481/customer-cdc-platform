@@ -181,8 +181,9 @@ def test_all_named_analytics_queries_execute(
     warehouse: DuckDBWarehouse, stream: EventStream
 ) -> None:
     row = customer_row(1)
+    ins = stream.insert(row)
     upd, row = stream.update(row, city="Denver")
-    warehouse.stage_events(parse_all([stream.insert(customer_row(1)), upd]))
+    warehouse.stage_events(parse_all([ins, upd]))
     warehouse.apply_scd()
 
     queries = warehouse.named_queries()

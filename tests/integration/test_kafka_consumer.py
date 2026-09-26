@@ -43,10 +43,12 @@ def test_consume_stage_commit_and_dead_letter(tmp_path: Path) -> None:
     )
 
     stream = EventStream()
+    # Build events in source order: each helper call advances the LSN.
     row = customer_row(1)
+    ins = stream.insert(row)
     upd, row = stream.update(row, city="Denver")
     events = [
-        stream.insert(customer_row(1)),
+        ins,
         upd,
         stream.insert(customer_row(2)),
         stream.delete(row),
